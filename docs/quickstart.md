@@ -27,6 +27,9 @@
   - Automated (provisions kind in Multipass, loads images, runs K8sE2eTest):
     - `./gradlew k8sE2e`
     - VM and kubeconfig are deleted after the test by default (set `-Pk8sDeleteVm=false` or `-Pk8sDeleteKubeconfig=false` to keep them).
+  - Fully isolated VM (k3s in Multipass, builds images in-VM, runs K8sE2eTest, cleans up):
+    - `./gradlew k8sE2eVm`
+    - Optional env: `VM_NAME`, `CPUS`, `MEMORY`, `DISK`, `REMOTE_DIR`, `MCFAAS_E2E_NAMESPACE`, `KEEP_VM=true`
 
 ## Run control plane locally
 

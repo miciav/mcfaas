@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.Map;
 
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Files;
@@ -90,10 +91,10 @@ class K8sE2eTest {
 
             RestAssured.baseURI = "http://localhost";
             RestAssured.port = apiForward.getLocalPort();
-            Awaitility.await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofSeconds(2)).untilAsserted(() ->
-                    RestAssured.get("http://localhost:" + mgmtForward.getLocalPort() + "/actuator/health")
-                            .then()
-                            .statusCode(200));
+            int mgmtPort = mgmtForward.getLocalPort();
+            awaitHealth(mgmtPort, "/actuator/health");
+            awaitHealth(mgmtPort, "/actuator/health/liveness");
+            awaitHealth(mgmtPort, "/actuator/health/readiness");
 
             String endpointUrl = "http://function-runtime." + NS + ".svc.cluster.local:8080/invoke";
             Map<String, Object> spec = Map.of(
@@ -110,10 +111,21 @@ class K8sE2eTest {
             RestAssured.given()
                     .contentType(ContentType.JSON)
                     .body(spec)
-                    .post("/v1/functions")
+                .post("/v1/functions")
+                .then()
+                .statusCode(201)
+                .body("name", equalTo("k8s-echo"));
+
+            RestAssured.get("/v1/functions")
                     .then()
-                    .statusCode(201)
-                    .body("name", equalTo("k8s-echo"));
+                    .statusCode(200)
+                    .body("name", hasItem("k8s-echo"));
+
+            RestAssured.get("/v1/functions/k8s-echo")
+                    .then()
+                    .statusCode(200)
+                    .body("name", equalTo("k8s-echo"))
+                    .body("image", equalTo(RUNTIME_IMAGE));
 
             RestAssured.given()
                     .contentType(ContentType.JSON)
@@ -123,6 +135,15 @@ class K8sE2eTest {
                     .statusCode(200)
                     .body("status", equalTo("success"))
                     .body("output.message", equalTo("hi"));
+
+            RestAssured.given()
+                    .contentType(ContentType.JSON)
+                    .body(Map.of("input", Map.of("message", "hello")))
+                    .post("/v1/functions/k8s-echo:invoke")
+                    .then()
+                    .statusCode(200)
+                    .body("status", equalTo("success"))
+                    .body("output.message", equalTo("hello"));
 
             String executionId = RestAssured.given()
                     .contentType(ContentType.JSON)
@@ -135,18 +156,31 @@ class K8sE2eTest {
                     .extract()
                     .path("executionId");
 
+            String executionId2 = RestAssured.given()
+                    .contentType(ContentType.JSON)
+                    .header("Idempotency-Key", "abc")
+                    .body(Map.of("input", "payload"))
+                    .post("/v1/functions/k8s-echo:enqueue")
+                    .then()
+                    .statusCode(202)
+                    .extract()
+                    .path("executionId");
+
+            org.junit.jupiter.api.Assertions.assertEquals(executionId, executionId2);
+
             Awaitility.await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(500)).untilAsserted(() ->
                     RestAssured.get("/v1/executions/{id}", executionId)
                             .then()
                             .statusCode(200)
                             .body("status", equalTo("success")));
 
-            String metrics = RestAssured.get("http://localhost:" + mgmtForward.getLocalPort() + "/actuator/prometheus")
+            String metrics = RestAssured.get("http://localhost:" + mgmtPort + "/actuator/prometheus")
                     .then()
                     .statusCode(200)
                     .extract()
                     .asString();
             org.junit.jupiter.api.Assertions.assertTrue(metrics.contains("function_enqueue_total"));
+            org.junit.jupiter.api.Assertions.assertTrue(metrics.contains("function_success_total"));
         }
     }
 
@@ -229,5 +263,13 @@ class K8sE2eTest {
                 .addNewPort().withName("http").withPort(8080).withTargetPort(new IntOrString(8080)).endPort()
                 .endSpec()
                 .build();
+    }
+
+    private static void awaitHealth(int port, String path) {
+        Awaitility.await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofSeconds(2)).untilAsserted(() ->
+                RestAssured.get("http://localhost:" + port + path)
+                        .then()
+                        .statusCode(200)
+                        .body("status", equalTo("UP")));
     }
 }
